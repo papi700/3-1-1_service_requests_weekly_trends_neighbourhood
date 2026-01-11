@@ -1,5 +1,5 @@
 import json
-from collections import Counter, defaultdict
+from collections import Counter
 from pathlib import Path
 
 # 1) Point this to your latest Bronze JSON file
