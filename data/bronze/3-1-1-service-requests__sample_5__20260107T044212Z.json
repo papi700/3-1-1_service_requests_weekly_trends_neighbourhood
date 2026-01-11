@@ -1,0 +1,90 @@
+{
+  "nhits": 1097150,
+  "parameters": {
+    "dataset": "3-1-1-service-requests",
+    "rows": 5,
+    "start": 0,
+    "sort": [
+      "-last_modified_timestamp"
+    ],
+    "format": "json",
+    "timezone": "UTC"
+  },
+  "records": [
+    {
+      "datasetid": "3-1-1-service-requests",
+      "recordid": "5b29b72e0fef2f1bfdda54a897d9e1422eb3712b",
+      "fields": {
+        "last_modified_timestamp": "2022-01-01T16:26:55+00:00",
+        "service_request_open_timestamp": "2022-01-01T08:53:08+00:00",
+        "channel": "WEB",
+        "department": "CMO - Vancouver Emergency Management Agency",
+        "status": "Close",
+        "closure_reason": "Reviewed and no action planned",
+        "service_request_close_date": "2022-01-01",
+        "service_request_type": "COVID-19 Enforcement Request Case"
+      },
+      "record_timestamp": "2026-01-06T14:50:32.807Z"
+    },
+    {
+      "datasetid": "3-1-1-service-requests",
+      "recordid": "47378cec34d1bab329e51e405aa9c4c53f5b75c1",
+      "fields": {
+        "last_modified_timestamp": "2022-01-01T16:27:29+00:00",
+        "service_request_open_timestamp": "2022-01-01T09:01:35+00:00",
+        "channel": "WEB",
+        "department": "CMO - Vancouver Emergency Management Agency",
+        "status": "Close",
+        "closure_reason": "Insufficient info",
+        "service_request_close_date": "2022-01-01",
+        "service_request_type": "COVID-19 Enforcement Request Case"
+      },
+      "record_timestamp": "2026-01-06T14:50:32.807Z"
+    },
+    {
+      "datasetid": "3-1-1-service-requests",
+      "recordid": "cd37cbdc28af413a4087711a8048ce831bd5fe95",
+      "fields": {
+        "last_modified_timestamp": "2022-01-01T16:28:02+00:00",
+        "service_request_open_timestamp": "2022-01-01T09:37:10+00:00",
+        "channel": "WEB",
+        "department": "CMO - Vancouver Emergency Management Agency",
+        "status": "Close",
+        "closure_reason": "Insufficient info",
+        "service_request_close_date": "2022-01-01",
+        "service_request_type": "COVID-19 Enforcement Request Case"
+      },
+      "record_timestamp": "2026-01-06T14:50:32.807Z"
+    },
+    {
+      "datasetid": "3-1-1-service-requests",
+      "recordid": "c00c1d004168d0bd972d2e973fe4f899ed64f78c",
+      "fields": {
+        "last_modified_timestamp": "2022-01-01T16:29:48+00:00",
+        "service_request_open_timestamp": "2022-01-01T10:16:28+00:00",
+        "channel": "WEB",
+        "department": "CMO - Vancouver Emergency Management Agency",
+        "status": "Close",
+        "closure_reason": "Reviewed and no action planned",
+        "service_request_close_date": "2022-01-01",
+        "service_request_type": "COVID-19 Enforcement Request Case"
+      },
+      "record_timestamp": "2026-01-06T14:50:32.807Z"
+    },
+    {
+      "datasetid": "3-1-1-service-requests",
+      "recordid": "8025c1f3f967dd4db586ce455b4a0ee6864c00a0",
+      "fields": {
+        "last_modified_timestamp": "2022-01-01T16:30:28+00:00",
+        "service_request_open_timestamp": "2022-01-01T10:50:40+00:00",
+        "channel": "WEB",
+        "department": "CMO - Vancouver Emergency Management Agency",
+        "status": "Close",
+        "closure_reason": "Insufficient info",
+        "service_request_close_date": "2022-01-01",
+        "service_request_type": "COVID-19 Enforcement Request Case"
+      },
+      "record_timestamp": "2026-01-06T14:50:32.807Z"
+    }
+  ]
+}
