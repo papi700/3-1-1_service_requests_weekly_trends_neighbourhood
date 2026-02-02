@@ -1,22 +1,40 @@
-# src/silver/dedupe.py
-
 from __future__ import annotations
 
 from datetime import datetime, timezone
 from typing import Any
 
-
-DT_MIN = datetime.min.replace(tzinfo=timezone.utc)
+UTC = timezone.utc
+DT_MIN = datetime.min.replace(tzinfo=UTC)
 
 
 def _to_dt(s: str | None) -> datetime:
-    """Parse ISO timestamp; return DT_MIN if missing/invalid."""
+    """
+    Parse an ISO-ish timestamp string into a timezone-aware UTC datetime.
+
+    Handles common API formats:
+    - "2026-01-06T19:50:58+00:00"
+    - "2026-01-07T14:49:52.065Z"  (Z means UTC)
+
+    Returns DT_MIN if missing/invalid.
+    """
     if not s:
         return DT_MIN
+
+    s = s.strip()
+    if s.endswith("Z"):
+        # Convert "Z" (UTC) into "+00:00" so fromisoformat() can parse it reliably.
+        s = s[:-1] + "+00:00"
+
     try:
-        return datetime.fromisoformat(s)
+        dt = datetime.fromisoformat(s)
     except ValueError:
         return DT_MIN
+
+    # Ensure tz-aware; if upstream gives naive timestamps, assume UTC.
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC)
+
+    return dt.astimezone(UTC)
 
 
 def dedupe_latest(
@@ -25,19 +43,17 @@ def dedupe_latest(
     ts_key: str = "last_modified_timestamp",
 ) -> tuple[list[dict[str, Any]], dict[str, int]]:
     """
-    Keep the latest version per recordid based on fields[last_modified_timestamp].
+    Keep the latest version per recordid based on fields[ts_key].
 
     Returns: (deduped_records, stats)
     """
     best_by_id: dict[str, dict[str, Any]] = {}
     stats = {
-        "input_records": 0,
+        "input_records": len(records),
         "kept_records": 0,
         "missing_id": 0,
         "invalid_or_missing_ts": 0,
     }
-
-    stats["input_records"] = len(records)
 
     for r in records:
         rid = r.get(id_key)
@@ -45,9 +61,11 @@ def dedupe_latest(
             stats["missing_id"] += 1
             continue
 
-        lm_raw = (r.get("fields") or {}).get(ts_key)
+        fields = r.get("fields") or {}
+        lm_raw = fields.get(ts_key)
         lm_dt = _to_dt(lm_raw)
-        if lm_dt is DT_MIN:
+
+        if lm_dt == DT_MIN:
             stats["invalid_or_missing_ts"] += 1
 
         prev = best_by_id.get(rid)
@@ -55,8 +73,8 @@ def dedupe_latest(
             best_by_id[rid] = r
             continue
 
-        prev_raw = (prev.get("fields") or {}).get(ts_key)
-        prev_dt = _to_dt(prev_raw)
+        prev_fields = prev.get("fields") or {}
+        prev_dt = _to_dt(prev_fields.get(ts_key))
 
         if lm_dt > prev_dt:
             best_by_id[rid] = r
