@@ -1,5 +1,13 @@
-.venv/
-.env
+# runtime state
+config/state.json
+
+# data outputs
+data/bronze/
+data/silver/
+data/gold/
+
+# python
 __pycache__/
 *.pyc
-data/
+.venv/
+*.env

@@ -146,9 +146,6 @@ def main() -> None:
 
     effective_start_iso = effective_start.replace(microsecond=0).isoformat()
 
-    effective_end = effective_start + timedelta(hours=CHUNK_SIZE_HOURS)
-    effective_end_iso = effective_end.replace(microsecond=0).isoformat()
-
     print("Last watermark:", last_watermark)
     print("Effective start:", effective_start_iso)
 
@@ -156,89 +153,87 @@ def main() -> None:
 
     all_records: list[dict[str, Any]] = []
     start = 0
-    page = 0
    
     range_start_dt = effective_start
     range_end_dt = now
     chunk_start_dt = range_start_dt
-    counter = 1
 
-    while chunk_start_dt <= range_end_dt:
+    while chunk_start_dt < range_end_dt:
 
         chunk_end_dt = min(chunk_start_dt + timedelta(hours=CHUNK_SIZE_HOURS), now)
-        if chunk_end_dt >= range_end_dt:
-            break
         chunk_start_iso = chunk_start_dt.replace(microsecond=0).isoformat()
         chunk_end_iso = chunk_end_dt.replace(microsecond=0).isoformat()
-        print(f"\nFetching chunk: {chunk_start_iso} to {chunk_end_iso}, run {counter}")
-        counter += 1
+        print(f"\nFetching chunk: {chunk_start_iso} to {chunk_end_iso}")
+        
 
-        # chunk_records: list[dict[str, Any]] = []
-        # start = 0
+        chunk_records: list[dict[str, Any]] = []
+        start = 0
+        chunk_page = 0
 
-        # #Fetch pages within the chunk
-        # while True:
-        #     payload = fetch_page(
-        #         url=url,
-        #         dataset=dataset,
-        #         chunk_start_iso=chunk_start_iso,
-        #         chunk_end_iso=chunk_end_iso,
-        #         start=start,
-        #         page_size=args.page_size,
-        #         timeout_s=args.timeout,
-        #     )
+        #Fetch pages within the chunk
+        while True:
+            if start + args.page_size > 10000:
+                break
+                raise SystemExit("This chunk has >10k records. Reduce CHUNK_SIZE_HOURS (e.g., 6 → 3 → 1).")
+            
+            payload = fetch_page(
+                url=url,
+                dataset=dataset,
+                chunk_start_iso=chunk_start_iso,
+                chunk_end_iso=chunk_end_iso,
+                start=start,
+                page_size=args.page_size,
+                timeout_s=args.timeout,
+            )
 
-        #     records = payload.get("records", [])
-        #     if not isinstance(records, list):
-        #         raise SystemExit("Unexpected payload: 'records' is not a list.")
+            records = payload.get("records", [])
+            if not isinstance(records, list):
+                raise SystemExit("Unexpected payload: 'records' is not a list.")
 
-        #     nhits = payload.get("nhits", 0)
-        #     if not isinstance(nhits, int):
-        #         nhits = 0
+            nhits = payload.get("nhits", 0)
+            if not isinstance(nhits, int):
+                nhits = 0
 
-        #     chunk_records.extend(records)
-        #     chunk_page += 1
-        #     print(f"  Page {chunk_page}: pulled {len(records)} records. Chunk total: {len(chunk_records)} / {nhits}")
+            chunk_records.extend(records)
+            
+            print(f"  Page {chunk_page}: pulled {len(records)} records. Chunk total: {len(chunk_records)} / {nhits}")
+            chunk_page += 1
+            start += args.page_size
+            if not records or (nhits and len(chunk_records) >= nhits):
+                break
 
-        #     chunk_start += args.page_size
-        #     if not records or (nhits and len(chunk_records) >= nhits):
-        #         break
-
-        # all_records.extend(chunk_records)
+        all_records.extend(chunk_records)
         chunk_start_dt = chunk_end_dt
 
-        # Move to next chunk
-    #     effective_start = effective_end
-    #     effective_start_iso = effective_end_iso
-    #     effective_end_iso = effective_start_iso + timedelta(hours=CHUNK_SIZE_HOURS)
-    #     start = 0  # Reset for next chunk
-    # BRONZE_DIR.mkdir(parents=True, exist_ok=True)
-    # out_path = BRONZE_DIR / f"{dataset}__last{args.hours}h__{utc_ts_compact(now)}.json"
-    # out_path.write_text(json.dumps(all_records, indent=2), encoding="utf-8")
-    # print(f"Saved {len(all_records)} records to: {out_path}")
+    print(f"\nTotal records pulled across all chunks: {len(all_records)}")
 
-    # # Update watermark based on max last_modified_timestamp present
-    # timestamps = []
-    # for r in all_records:
-    #     fields = r.get("fields", {})
-    #     if isinstance(fields, dict):
-    #         ts = fields.get("last_modified_timestamp")
-    #         if ts:
-    #             timestamps.append(str(ts))
+    BRONZE_DIR.mkdir(parents=True, exist_ok=True)
+    out_path = BRONZE_DIR / f"{dataset}__last{args.hours}h__{utc_ts_compact(now)}.json"
+    out_path.write_text(json.dumps(all_records, indent=2), encoding="utf-8")
+    print(f"Saved {len(all_records)} records to: {out_path}")
 
-    # if not timestamps:
-    #     print("No last_modified_timestamp found. State not updated.")
-    #     return
+    # Update watermark based on max last_modified_timestamp present
+    timestamps = []
+    for r in all_records:
+        fields = r.get("fields", {})
+        if isinstance(fields, dict):
+            ts = fields.get("last_modified_timestamp")
+            if ts:
+                timestamps.append(str(ts))
 
-    # max_dt = max((parse_iso_dt(t) for t in timestamps))
-    # if max_dt == datetime.min.replace(tzinfo=timezone.utc):
-    #     print("Could not parse any last_modified_timestamp. State not updated.")
-    #     return
+    if not timestamps:
+        print("No last_modified_timestamp found. State not updated.")
+        return
 
-    # new_watermark = max_dt.replace(microsecond=0).isoformat()
-    # state["last_watermark"] = new_watermark
-    # save_state(STATE_PATH, state)
-    # print("Updated last_watermark to:", new_watermark)
+    max_dt = max((parse_iso_dt(t) for t in timestamps))
+    if max_dt == datetime.min.replace(tzinfo=timezone.utc):
+        print("Could not parse any last_modified_timestamp. State not updated.")
+        return
+
+    new_watermark = max_dt.replace(microsecond=0).isoformat()
+    state["last_watermark"] = new_watermark
+    save_state(STATE_PATH, state)
+    print("Updated last_watermark to:", new_watermark)
 
 
 if __name__ == "__main__":
