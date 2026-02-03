@@ -29,11 +29,16 @@ src/
   gold/
     build_weekly_trends.py
 config/
+  README.md
   state.example.json
 data/
   bronze/   (gitignored)
   silver/   (gitignored)
   gold/     (gitignored)
+docs/
+  ingestion.md
+  silver.md
+  gold.md
 ```
 
 ## Setup
@@ -84,6 +89,13 @@ python -m src.silver.dedupe_latest_by_recordid
 ```bash
 python -m src.gold.build_weekly_trends
 ```
+
+## Docs
+- [Ingestion (Bronze)](docs/ingestion.md)
+- [Silver (Deduped)](docs/silver.md)
+- [Gold (Weekly Trends)](docs/gold.md)
+
+
 
 ## Outputs
 Generated outputs are written under `data/` and are gitignored:
