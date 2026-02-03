@@ -1,107 +1,240 @@
-# src/ingestion/pull_recent_48h.py
-
+import argparse
 import json
 import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Any
 
 import requests
 from dotenv import load_dotenv
 
 
-def main(hours: int = 48, rows: int = 1000) -> None:
-    load_dotenv()
-    base_url = os.getenv("ODS_BASE_URL", "").rstrip("/")
-    dataset = os.getenv("ODS_DATASET", "")
-    if not base_url or not dataset:
-        raise SystemExit("Missing ODS_BASE_URL or ODS_DATASET in .env")
+API_PATH = "/api/records/1.0/search/"
+STATE_PATH = Path("config/state.json")
+BRONZE_DIR = Path("data/bronze")
+CHUNK_SIZE_HOURS = 6
 
-    NOW = datetime.now(timezone.utc)
-    START = NOW - timedelta(hours=hours)
-    START_ISO = START.replace(microsecond=0).isoformat()
 
-    STATE_PATH = Path("config/state.json")
-    LOOKBACK_HOURS = 24  # safety buffer to catch late updates
+def utc_now() -> datetime:
+    return datetime.now(timezone.utc)
 
-    state = json.loads(STATE_PATH.read_text(encoding="utf-8"))
-    last_watermark = state.get("last_watermark")  # either an ISO timestamp string, or None
 
-    if last_watermark is None:
-        # First run: use the 48h start you already computed
-        EFFECTIVE_START_ISO = START_ISO
-    else:
-        # Later runs: pull from (last watermark - lookback)
-        lw = datetime.fromisoformat(last_watermark)  # uses the +00:00 offset in the string
-        effective_start = lw - timedelta(hours=LOOKBACK_HOURS)
-        EFFECTIVE_START_ISO = effective_start.replace(microsecond=0).isoformat()
+def utc_ts_compact(dt: datetime) -> str:
+    return dt.strftime("%Y%m%dT%H%M%SZ")
 
-    print("Last watermark:", last_watermark)
-    print("Effective start:", EFFECTIVE_START_ISO)
 
-    q = f'last_modified_timestamp >= "{EFFECTIVE_START_ISO}"'
+def normalize_iso_ts(s: str) -> str:
+    """
+    Normalize common API timestamp variants for datetime.fromisoformat().
+    - Converts trailing 'Z' to '+00:00'
+    """
+    s = s.strip()
+    if s.endswith("Z"):
+        return s[:-1] + "+00:00"
+    return s
 
-    URL = f"{base_url}/api/records/1.0/search/"
-    PARAMS = {
+
+def parse_iso_dt(s: str) -> datetime:
+    """
+    Parse ISO datetime string into timezone-aware datetime (UTC).
+    Returns DT_MIN on failure.
+    """
+    try:
+        dt = datetime.fromisoformat(normalize_iso_ts(s))
+    except Exception:
+        return datetime.min.replace(tzinfo=timezone.utc)
+
+    if dt.tzinfo is None:
+        # If upstream ever gives a naive timestamp, assume UTC
+        dt = dt.replace(tzinfo=timezone.utc)
+
+    return dt.astimezone(timezone.utc)
+
+
+def load_state(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        return {"last_watermark": None}
+
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        # If state got corrupted, fail loudly with a helpful message
+        raise SystemExit(f"State file is not valid JSON: {path}")
+
+    if not isinstance(data, dict):
+        raise SystemExit(f"State file must contain a JSON object: {path}")
+
+    data.setdefault("last_watermark", None)
+    return data
+
+
+def save_state(path: Path, state: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(state, indent=2), encoding="utf-8")
+
+
+def build_url(base_url: str) -> str:
+    return f"{base_url.rstrip('/')}{API_PATH}"
+
+
+def fetch_page(
+    url: str,
+    dataset: str,
+    chunk_start_iso: str,
+    chunk_end_iso: str,
+    start: int,
+    page_size: int,
+    timeout_s: int,
+) -> dict[str, Any]:
+    q = f'last_modified_timestamp >= "{chunk_start_iso}" AND last_modified_timestamp < "{chunk_end_iso}"'
+    params = {
         "dataset": dataset,
         "q": q,
-        "rows": rows,
+        "rows": page_size,
+        "start": start,
         "sort": "-last_modified_timestamp",
     }
 
-    ALL_RECORDS = []
-    ROWS_PER_PAGE = 1000
+    try:
+        resp = requests.get(url, params=params, timeout=timeout_s)
+        resp.raise_for_status()
+    except requests.RequestException as e:
+        raise SystemExit(f"HTTP request failed: {e}") from e
+
+    try:
+        payload = resp.json()
+    except ValueError as e:
+        raise SystemExit("API response was not valid JSON.") from e
+
+    if not isinstance(payload, dict):
+        raise SystemExit("Unexpected API payload shape (expected JSON object).")
+
+    return payload
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Incrementally pull recent 3-1-1 records (last_modified_timestamp) into Bronze using a watermark + lookback."
+    )
+    parser.add_argument("--hours", type=int, default=48, help="Fallback window for first run (default: 48).")
+    parser.add_argument("--lookback-hours", type=int, default=24, help="Safety lookback to catch late updates (default: 24).")
+    parser.add_argument("--page-size", type=int, default=1000, help="Rows per API page (default: 1000). Max is typically 1000.")
+    parser.add_argument("--timeout", type=int, default=30, help="HTTP timeout seconds (default: 30).")
+    args = parser.parse_args()
+
+    load_dotenv()
+    base_url = os.getenv("ODS_BASE_URL", "").strip()
+    dataset = os.getenv("ODS_DATASET", "").strip()
+
+    if not base_url or not dataset:
+        raise SystemExit("Missing ODS_BASE_URL or ODS_DATASET in .env")
+
+    now = utc_now()
+    fallback_start = now - timedelta(hours=args.hours)
+
+    state = load_state(STATE_PATH)
+    last_watermark = state.get("last_watermark")
+
+    if last_watermark:
+        lw_dt = parse_iso_dt(str(last_watermark))
+        if lw_dt == datetime.min.replace(tzinfo=timezone.utc):
+            raise SystemExit(f"Invalid last_watermark in state.json: {last_watermark}")
+        effective_start = lw_dt - timedelta(hours=args.lookback_hours)
+    else:
+        effective_start = fallback_start
+
+    effective_start_iso = effective_start.replace(microsecond=0).isoformat()
+
+    print("Last watermark:", last_watermark)
+    print("Effective start:", effective_start_iso)
+
+    url = build_url(base_url)
+
+    all_records: list[dict[str, Any]] = []
     start = 0
+   
+    range_start_dt = effective_start
+    range_end_dt = now
+    chunk_start_dt = range_start_dt
 
-    while True:
-        PARAMS["rows"] = ROWS_PER_PAGE
-        PARAMS["start"] = start
+    while chunk_start_dt < range_end_dt:
 
-        RESP = requests.get(URL, params=PARAMS, timeout=30)
-        RESP.raise_for_status()
-        PAYLOAD = RESP.json()
-
-        records = PAYLOAD.get("records", [])
-        ALL_RECORDS.extend(records)
-
-        nhits = PAYLOAD.get("nhits", 0)
-        print(f"Pulled {len(records)} records this page. Total so far: {len(ALL_RECORDS)} / {nhits}")
-
-        start += ROWS_PER_PAGE
-        if len(ALL_RECORDS) >= nhits or not records:
-            break
+        chunk_end_dt = min(chunk_start_dt + timedelta(hours=CHUNK_SIZE_HOURS), now)
+        chunk_start_iso = chunk_start_dt.replace(microsecond=0).isoformat()
+        chunk_end_iso = chunk_end_dt.replace(microsecond=0).isoformat()
+        print(f"\nFetching chunk: {chunk_start_iso} to {chunk_end_iso}")
         
-    
-    out_dir = Path("data/bronze")
-    out_dir.mkdir(parents=True, exist_ok=True)
-    ts = NOW.strftime("%Y%m%dT%H%M%SZ")
-    out_path = out_dir / f"{dataset}__last{hours}h__{ts}.json"
-    out_path.write_text(json.dumps(ALL_RECORDS, indent=2), encoding="utf-8")
-    print(f"Saved {len(ALL_RECORDS)} records to: {out_path}")
 
-    timestamps = [
-        r.get("fields", {}).get("last_modified_timestamp")
-        for r in ALL_RECORDS
-        if r.get("fields", {}).get("last_modified_timestamp")
-    ]
+        chunk_records: list[dict[str, Any]] = []
+        start = 0
+        chunk_page = 0
+
+        #Fetch pages within the chunk
+        while True:
+            if start + args.page_size > 10000:
+                break
+                raise SystemExit("This chunk has >10k records. Reduce CHUNK_SIZE_HOURS (e.g., 6 → 3 → 1).")
+            
+            payload = fetch_page(
+                url=url,
+                dataset=dataset,
+                chunk_start_iso=chunk_start_iso,
+                chunk_end_iso=chunk_end_iso,
+                start=start,
+                page_size=args.page_size,
+                timeout_s=args.timeout,
+            )
+
+            records = payload.get("records", [])
+            if not isinstance(records, list):
+                raise SystemExit("Unexpected payload: 'records' is not a list.")
+
+            nhits = payload.get("nhits", 0)
+            if not isinstance(nhits, int):
+                nhits = 0
+
+            chunk_records.extend(records)
+            
+            print(f"  Page {chunk_page}: pulled {len(records)} records. Chunk total: {len(chunk_records)} / {nhits}")
+            chunk_page += 1
+            start += args.page_size
+            if not records or (nhits and len(chunk_records) >= nhits):
+                break
+
+        all_records.extend(chunk_records)
+        chunk_start_dt = chunk_end_dt
+
+    print(f"\nTotal records pulled across all chunks: {len(all_records)}")
+
+    BRONZE_DIR.mkdir(parents=True, exist_ok=True)
+    out_path = BRONZE_DIR / f"{dataset}__last{args.hours}h__{utc_ts_compact(now)}.json"
+    out_path.write_text(json.dumps(all_records, indent=2), encoding="utf-8")
+    print(f"Saved {len(all_records)} records to: {out_path}")
+
+    # Update watermark based on max last_modified_timestamp present
+    timestamps = []
+    for r in all_records:
+        fields = r.get("fields", {})
+        if isinstance(fields, dict):
+            ts = fields.get("last_modified_timestamp")
+            if ts:
+                timestamps.append(str(ts))
 
     if not timestamps:
         print("No last_modified_timestamp found. State not updated.")
-    else:
-        # Parse ISO timestamps like "2026-01-05T06:36:10+00:00"
-        def to_dt(s: str) -> datetime:
-            return datetime.fromisoformat(s)
+        return
 
-        new_watermark = max(timestamps, key=to_dt)
+    max_dt = max((parse_iso_dt(t) for t in timestamps))
+    if max_dt == datetime.min.replace(tzinfo=timezone.utc):
+        print("Could not parse any last_modified_timestamp. State not updated.")
+        return
 
-        state_path = Path("config/state.json")
-        state = json.loads(state_path.read_text(encoding="utf-8"))
-        state["last_watermark"] = new_watermark
-        state_path.write_text(json.dumps(state, indent=2), encoding="utf-8")
-
-        print("Updated last_watermark to:", new_watermark)
+    new_watermark = max_dt.replace(microsecond=0).isoformat()
+    state["last_watermark"] = new_watermark
+    save_state(STATE_PATH, state)
+    print("Updated last_watermark to:", new_watermark)
 
 
 if __name__ == "__main__":
-    main()
-    
-
+    main()  
